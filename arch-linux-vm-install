@@ -1,0 +1,187 @@
+#!/bin/bash
+#
+# This is an Arch Linux installation script for UEFI virtual machines.
+
+# Btrfs note: CoW can negatively affect performance with large files that have
+# small random writes. Disable CoW for databases and virtual machine images.
+#
+# To disable CoW for single files/directories do:
+# $ chattr +C /dir/file
+
+# Drives
+# sda is 256 GB HDD
+
+# Filesystem tree.
+# [s] = subvolume
+# [d] = directory
+#
+# /dev/sda1 [esp] (HDD) 1024M for EFI System Partition
+#
+# /dev/sda2 [arch] (HDD)
+# |
+# +-- [s] rootvol      /
+# +-- [s] boot         /boot
+# +-- [s] opt          /opt
+# +-- [s] srv          /srv
+# +-- [s] home         /home
+# +-- [s] data         /data
+# +-- [s] var          /var
+# +-- [s] pacmanpkg    /var/cache/pacman/pkg
+# +-- [s] abs          /var/abs
+# +-- [s] var-cache    /var/cache
+# +-- [s] var-log      /var/log
+# +-- [s] var-spool    /var/spool
+# +-- [s] var-tmp      /var/tmp
+# +-- [d] snapshots
+#     |
+#     +-- [s] rootvol    /.snapshots
+#     +-- [s] home       /home/.snapshots
+#     +-- [s] var        /var/.snapshots
+
+confirm_to_run_command() {
+  local response
+  read -r -p "Run command: \`$1\` ? [Y/N] " response
+
+  if [[ ! "${response}" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+    exit 0
+  fi
+
+  echo -e '\n'
+  
+  eval "$1"
+}
+
+clear
+
+echo -e 'Installing Arch Linux on virtual machine...\n'
+
+# Verify the boot mode.
+# To check to boot mode we can also test if the following path exists, like so:
+#
+# ls /sys/firmware/efi/efivars
+#
+# If it exists the system is booted in UEFI mode otherwise it may be booted in
+# BIOS or CSM mode.
+confirm_to_run_command 'efivar -l'
+
+if [ -f /sys/firmware/efi/efivars ]; then
+  echo -e 'System is booted in UEFI mode.\n'
+else
+  echo -e 'System is booted in BIOS mode.\n'
+fi
+
+# Connect to the internet.
+# Since the VM is on a wired connection so it might just work right away.
+# Configuration is needed for wireless connections.
+confirm_to_run_command 'ping -c 3 archlinux.org'
+
+# Update the system clock.
+confirm_to_run_command 'timedatectl set-ntp true'
+confirm_to_run_command 'timedatectl set-timezone Asia/Karachi'
+confirm_to_run_command 'timedatectl status'
+
+# View disks and partitions.
+confirm_to_run_command 'lsblk'
+
+# Erase the partition table. Zero out the first 10000 blocks of the disk.
+confirm_to_run_command 'sgdisk --zap-all /dev/sda'
+confirm_to_run_command 'dd if=/dev/zero of=/dev/sda bs=1M count=10000 status=progress'
+
+# View disks and partitions again to ensure udev has given them the names
+# (i.e. /dev/sdX where X is a, b, c, etc.) you'd want them to have.
+confirm_to_run_command 'lsblk'
+
+# Check UEFI mode (if UEFI variable prints you're in UEFI mode).
+confirm_to_run_command 'efivar -l'
+
+# Use cgdisk to create GPT partitions.
+# UEFI and BIOS are going to have different partition layouts.
+#
+# 1024 MB FAT32 "esp" partition; cgdisk code ef00.
+# The rest for btrfs "arch" partition; cgdisk code 8300.
+confirm_to_run_command 'cgdisk /dev/sda'
+
+# Check if the disk partitions are set as desired.
+confirm_to_run_command 'lsblk'
+
+# Format partitions with desired filesystems.
+confirm_to_run_command 'mkfs.fat -F32 -n esp /dev/sda1'
+confirm_to_run_command 'mkfs.btrfs -L arch /dev/sda2'
+
+# Mount main btrfs partition.
+confirm_to_run_command 'mkdir -p /mnt/btrfs-root'
+confirm_to_run_command 'mount /dev/sda2 /mnt/btrfs-root'
+
+# Create btrfs subvolumes for system.
+confirm_to_run_command 'btrfs subvolume create /mnt/btrfs-root/rootvol'
+confirm_to_run_command 'btrfs subvolume create /mnt/btrfs-root/boot'
+confirm_to_run_command 'btrfs subvolume create /mnt/btrfs-root/opt'
+confirm_to_run_command 'btrfs subvolume create /mnt/btrfs-root/srv'
+confirm_to_run_command 'btrfs subvolume create /mnt/btrfs-root/home'
+confirm_to_run_command 'btrfs subvolume create /mnt/btrfs-root/data'
+confirm_to_run_command 'btrfs subvolume create /mnt/btrfs-root/var'
+confirm_to_run_command 'btrfs subvolume create /mnt/btrfs-root/pacmanpkg'
+confirm_to_run_command 'btrfs subvolume create /mnt/btrfs-root/abs'
+# abs is Arch Build System. It's created inside var/abs but subvol is called
+# abs; not var-abs.
+confirm_to_run_command 'btrfs subvolume create /mnt/btrfs-root/var-cache'
+confirm_to_run_command 'btrfs subvolume create /mnt/btrfs-root/var-log'
+confirm_to_run_command 'btrfs subvolume create /mnt/btrfs-root/var-spool'
+confirm_to_run_command 'btrfs subvolume create /mnt/btrfs-root/var-tmp'
+
+# Create btrfs subvolumes for snapshots.
+confirm_to_run_command 'mkdir -p /mnt/btrfs-root/snapshots'
+confirm_to_run_command 'btrfs subvolume create /mnt/btrfs-root/snapshots/rootvol'
+confirm_to_run_command 'btrfs subvolume create /mnt/btrfs-root/snapshots/home'
+confirm_to_run_command 'btrfs subvolume create /mnt/btrfs-root/snapshots/var'
+
+# List all subvolumes for /mnt/btrfs-root.
+confirm_to_run_command 'btrfs subvolume list -a /mnt/btrfs-root'
+
+# Unmount.
+confirm_to_run_command 'umount -R /mnt/btrfs-root'
+
+# Mount root subvolume.
+confirm_to_run_command 'mount -o subvol=rootvol /dev/sda2 /mnt/btrfs-root'
+
+# Create directories in the root subvolume and mount other subvolumes.
+# Don't change the order of the commands since to create directories inside
+# another subvolume it should be mounted first.
+confirm_to_run_command 'mkdir -p /mnt/btrfs-root/{boot,home,data,var,opt,srv,.snapshots}'
+
+confirm_to_run_command 'mount -o subvol=boot /dev/sda2 /mnt/btrfs-root/boot'
+confirm_to_run_command 'mount -o subvol=home /dev/sda2 /mnt/btrfs-root/home'
+confirm_to_run_command 'mount -o subvol=data /dev/sda2 /mnt/btrfs-root/data'
+confirm_to_run_command 'mount -o subvol=var /dev/sda2 /mnt/btrfs-root/var'
+confirm_to_run_command 'mount -o subvol=opt /dev/sda2 /mnt/btrfs-root/opt'
+confirm_to_run_command 'mount -o subvol=srv /dev/sda2 /mnt/btrfs-root/srv'
+confirm_to_run_command 'mount -o subvol=snapshots/rootvol /dev/sda2 /mnt/btrfs-root/.snapshots'
+
+confirm_to_run_command 'mkdir -p /mnt/btrfs-root/var/{abs,cache,log,spool,tmp,.snapshots}'
+confirm_to_run_command 'mkdir -p /mnt/btrfs-root/home/.snapshots'
+confirm_to_run_command 'mount -o subvol=abs /dev/sda2 /mnt/btrfs-root/var/abs'
+confirm_to_run_command 'mount -o subvol=var-cache /dev/sda2 /mnt/btrfs-root/var/cache'
+confirm_to_run_command 'mount -o subvol=var-log /dev/sda2 /mnt/btrfs-root/var/log'
+confirm_to_run_command 'mount -o subvol=var-spool /dev/sda2 /mnt/btrfs-root/var/spool'
+confirm_to_run_command 'mount -o subvol=var-tmp /dev/sda2 /mnt/btrfs-root/var/tmp'
+confirm_to_run_command 'mount -o subvol=snapshots/home /dev/sda2 /mnt/btrfs-root/home/.snapshots'
+confirm_to_run_command 'mount -o subvol=snapshots/var /dev/sda2 /mnt/btrfs-root/var/.snapshots'
+
+confirm_to_run_command 'mkdir -p /mnt/btrfs-root/var/cache/pacman/pkg'
+confirm_to_run_command 'mount -o subvol=pacmanpkg /dev/sda2 /mnt/btrfs-root/var/cache/pacman/pkg'
+
+# List all subvolumes for /mnt/btrfs-root.
+confirm_to_run_command 'btrfs subvolume list -a /mnt/btrfs-root'
+
+# Mount EFI System Partition.
+confirm_to_run_command 'mkdir -p /mnt/btrfs-root/boot/efi'
+confirm_to_run_command 'mount /dev/sda1 /mnt/btrfs-root/boot/efi'
+
+# Select a mirror.
+confirm_to_run_command 'nano /etc/pacman.d/mirrorlist'
+
+# Check internet connection.
+# It should already be connected since this VM has a wired connection.
+confirm_to_run_command 'ping -c 3 www.google.com'
+
+echo -e 'End of script.\n'
